@@ -21,11 +21,13 @@ start_forge_instance() {
     print_feedback "Starting ${name} on port ${port}..."
     cd "$root"
 
+    chmod +x webui.sh 2>/dev/null || true
+
     if grep -q "can_run_as_root=0" webui.sh; then
         sed -i 's/can_run_as_root=0/can_run_as_root=1/' webui.sh
     fi
 
-    COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" ./webui.sh -f > >(tee "$log_file") 2>&1 &
+    COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" bash webui.sh -f > >(tee "$log_file") 2>&1 &
 }
 
 if [ "${NO_SYNC}" == "true" ]; then
