@@ -62,7 +62,8 @@ WEBUIEOF
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] COMMANDLINE_ARGS: --listen --port ${port} --enable-insecure-extension-access --api $*" >> "$log_file"
 
         GRADIO_TEMP_DIR="${root}/tmp/gradio" \
-        COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" \
+        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
+        COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api --opt-sdp-attention $*" \
         bash webui.sh -f >> "$log_file" 2>&1
         exit_code=$?
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} exited with code ${exit_code}" >> "$log_file"
