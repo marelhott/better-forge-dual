@@ -48,8 +48,18 @@ start_forge_instance() {
         fi
 
         mkdir -p "$(dirname "$log_file")" "${root}/tmp/gradio"
+
+        # Overwrite webui-user.sh so it cannot override COMMANDLINE_ARGS.
+        # The workspace volume persists between restarts and may carry a stale
+        # webui-user.sh with invalid flags (e.g. --output-path) from older runs.
+        cat > "${root}/webui-user.sh" << 'WEBUIEOF'
+#!/bin/bash
+# Managed by pre_start.sh – COMMANDLINE_ARGS is injected via environment.
+# Do not set COMMANDLINE_ARGS here; it will be ignored.
+WEBUIEOF
+
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ${name} in ${root}" >> "$log_file"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Extra args: $*" >> "$log_file"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] COMMANDLINE_ARGS: --listen --port ${port} --enable-insecure-extension-access --api $*" >> "$log_file"
 
         GRADIO_TEMP_DIR="${root}/tmp/gradio" \
         COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" \
