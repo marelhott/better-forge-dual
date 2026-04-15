@@ -108,12 +108,12 @@ case "${MODE}" in
         start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
         ;;
     ux)
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --outdir-samples "${UX_ROOT}/outputs"
+        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --data-dir "${UX_ROOT}"
         ;;
     both)
         start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
         wait_for_port 7860 "classic Forge"
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --outdir-samples "${UX_ROOT}/outputs"
+        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --data-dir "${UX_ROOT}"
         ;;
     *)
         echo "Unsupported FORGE_MODE=${MODE}; use classic, ux, or both" >&2
