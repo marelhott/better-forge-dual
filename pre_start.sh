@@ -11,6 +11,25 @@ rsync_with_progress() {
     rsync -aHvx --info=progress2 --ignore-existing --update --stats "$@"
 }
 
+wait_for_port() {
+    local port="$1"
+    local name="$2"
+    local timeout="${3:-300}"
+    local elapsed=0
+
+    print_feedback "Waiting for ${name} on port ${port}..."
+    while ! ss -lntp 2>/dev/null | grep -q ":${port} "; do
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [ "${elapsed}" -ge "${timeout}" ]; then
+            echo "[Forge Startup] Timeout waiting for ${name} on port ${port}" >&2
+            return 1
+        fi
+    done
+
+    print_feedback "${name} is listening on port ${port}."
+}
+
 start_forge_instance() {
     local root="$1"
     local name="$2"
@@ -19,15 +38,26 @@ start_forge_instance() {
     shift 4
 
     print_feedback "Starting ${name} on port ${port}..."
-    cd "$root"
+    (
+        cd "$root"
 
-    chmod +x webui.sh 2>/dev/null || true
+        chmod +x webui.sh 2>/dev/null || true
 
-    if grep -q "can_run_as_root=0" webui.sh; then
-        sed -i 's/can_run_as_root=0/can_run_as_root=1/' webui.sh
-    fi
+        if grep -q "can_run_as_root=0" webui.sh; then
+            sed -i 's/can_run_as_root=0/can_run_as_root=1/' webui.sh
+        fi
 
-    COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" bash webui.sh -f > >(tee "$log_file") 2>&1 &
+        mkdir -p "$(dirname "$log_file")" "${root}/tmp/gradio"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ${name} in ${root}" >> "$log_file"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Extra args: $*" >> "$log_file"
+
+        GRADIO_TEMP_DIR="${root}/tmp/gradio" \
+        COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api $*" \
+        bash webui.sh -f >> "$log_file" 2>&1
+        exit_code=$?
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} exited with code ${exit_code}" >> "$log_file"
+        exit "${exit_code}"
+    ) &
 }
 
 if [ "${NO_SYNC}" == "true" ]; then
@@ -78,11 +108,12 @@ case "${MODE}" in
         start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
         ;;
     ux)
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --output-path "${UX_ROOT}/outputs"
+        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --outdir-samples "${UX_ROOT}/outputs"
         ;;
     both)
         start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --output-path "${UX_ROOT}/outputs"
+        wait_for_port 7860 "classic Forge"
+        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --outdir-samples "${UX_ROOT}/outputs"
         ;;
     *)
         echo "Unsupported FORGE_MODE=${MODE}; use classic, ux, or both" >&2
