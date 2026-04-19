@@ -80,8 +80,6 @@ prepare_workspace() {
         print_feedback "virtual environment already present, skipping extraction"
     fi
 
-    source "${VENV_DIR}/bin/activate"
-
     if [[ ! -d "${FORGE_DIR}" ]] || [[ -z "$(ls -A "${FORGE_DIR}" 2>/dev/null)" ]]; then
         print_feedback "syncing Classic Forge into workspace..."
         mkdir -p "${FORGE_DIR}"
@@ -133,11 +131,15 @@ start_classic_forge() {
     (
         cd "${FORGE_DIR}"
         mkdir -p tmp/gradio
+        # webui.sh checks VIRTUAL_ENV: if set it skips venv setup and uses system
+        # python3.10 (no pip). Unset it and point venv_dir at our bforge venv so
+        # webui.sh activates it properly and sets python_cmd to bforge/bin/python.
+        unset VIRTUAL_ENV
+        export venv_dir="${VENV_DIR}"
         export GRADIO_SERVER_PORT="${FORGE_PORT}"
         export GRADIO_TEMP_DIR="${FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
         export COMMANDLINE_ARGS="--listen --port ${FORGE_PORT} --api --theme dark --enable-insecure-extension-access"
-        # tee streams output to both the log file and container stdout (RunPod pod log)
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-classic.log"
     ) &
     FORGE_PID=$!
@@ -159,11 +161,12 @@ start_ux_forge() {
     (
         cd "${UX_FORGE_DIR}"
         mkdir -p tmp/gradio
+        unset VIRTUAL_ENV
+        export venv_dir="${VENV_DIR}"
         export GRADIO_SERVER_PORT="${UX_PORT}"
         export GRADIO_TEMP_DIR="${UX_FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-        # --skip-install: venv was already set up by Classic Forge above.
-        # Running pip checks twice on the same venv causes lock conflicts.
+        # --skip-install: Classic Forge already ran pip setup on the shared venv.
         export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install"
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-ux.log"
     ) &
