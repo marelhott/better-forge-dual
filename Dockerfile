@@ -11,3 +11,6 @@ RUN head -n -1 /etc/nginx/nginx.conf > /tmp/nginx_patched.conf \
 
 COPY pre_start.sh /pre_start.sh
 RUN chmod +x /pre_start.sh
+
+# Advertise the actual public ports this derived image expects in Runpod.
+EXPOSE 22 7777 7861 7862
