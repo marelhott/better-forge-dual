@@ -15,6 +15,12 @@ print_feedback() {
     echo -e "${GREEN}[start]:${NC} $1"
 }
 
+print_error() {
+    RED='\033[0;31m'
+    NC='\033[0m'
+    echo -e "${RED}[start]:${NC} $1" >&2
+}
+
 kill_port() {
     local port="$1"
     if command -v lsof >/dev/null 2>&1; then
@@ -127,6 +133,23 @@ start_ux_forge() {
     UX_PID=$!
 }
 
+report_service_failure() {
+    local pid="$1"
+
+    if [[ "${pid}" == "${CODE_PID}" ]]; then
+        print_error "code-server exited first (pid=${pid})"
+        [[ -f "${WORKSPACE_ROOT}/logs/code-server.log" ]] && tail -120 "${WORKSPACE_ROOT}/logs/code-server.log" >&2 || true
+    elif [[ "${pid}" == "${FORGE_PID}" ]]; then
+        print_error "Classic Forge exited first (pid=${pid})"
+        [[ -f "${WORKSPACE_ROOT}/logs/webui.log" ]] && tail -120 "${WORKSPACE_ROOT}/logs/webui.log" >&2 || true
+    elif [[ "${pid}" == "${UX_PID}" ]]; then
+        print_error "UX Forge exited first (pid=${pid})"
+        [[ -f "${WORKSPACE_ROOT}/logs/webui-ux.log" ]] && tail -120 "${WORKSPACE_ROOT}/logs/webui-ux.log" >&2 || true
+    else
+        print_error "unknown service exited first (pid=${pid})"
+    fi
+}
+
 kill_port "${CODE_PORT}"
 kill_port "${FORGE_PORT}"
 kill_port "${UX_PORT}"
@@ -141,6 +164,10 @@ start_ux_forge
 
 print_feedback "services started: code-server=${CODE_PID}, forge=${FORGE_PID}, ux=${UX_PID}"
 
-wait -n "${CODE_PID}" "${FORGE_PID}" "${UX_PID}"
-print_feedback "a service exited; stopping container"
+set +e
+wait -n -p EXITED_PID "${CODE_PID}" "${FORGE_PID}" "${UX_PID}"
+EXIT_STATUS=$?
+set -e
+report_service_failure "${EXITED_PID:-unknown}"
+print_error "a service exited with status ${EXIT_STATUS}; stopping container"
 exit 1
