@@ -96,10 +96,16 @@ prepare_workspace() {
     fi
 
     if [[ ! -d "${UX_FORGE_DIR}" ]] || [[ -z "$(ls -A "${UX_FORGE_DIR}" 2>/dev/null)" ]]; then
-        print_feedback "syncing UX Forge from Classic Forge (full copy including .git)..."
+        print_feedback "syncing UX Forge from Classic Forge (excluding models/outputs to save disk)..."
         mkdir -p "${UX_FORGE_DIR}"
-        # Full rsync without --ignore-existing so .git and repositories/ are copied.
-        rsync -aHx --info=progress2 "${FORGE_DIR}/" "${UX_FORGE_DIR}/"
+        # Exclude large dirs — UX Forge will share models via COMMANDLINE_ARGS.
+        # outputs/ and log/ are UX-instance-specific and not needed from Classic.
+        rsync -aHx --info=progress2 \
+            --exclude='models/' \
+            --exclude='outputs/' \
+            --exclude='log/' \
+            --exclude='tmp/' \
+            "${FORGE_DIR}/" "${UX_FORGE_DIR}/"
     else
         print_feedback "UX Forge directory present with .git, skipping sync"
     fi
@@ -185,7 +191,15 @@ start_ux_forge() {
         export GRADIO_TEMP_DIR="${UX_FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
         # --skip-install: Classic Forge already ran pip setup on the shared venv.
-        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install --cuda-malloc"
+        # Model dirs point to Classic Forge so models are not duplicated on disk.
+        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install --cuda-malloc \
+            --ckpt-dir ${FORGE_DIR}/models/Stable-diffusion \
+            --lora-dir ${FORGE_DIR}/models/Lora \
+            --vae-dir ${FORGE_DIR}/models/VAE \
+            --embeddings-dir ${FORGE_DIR}/embeddings \
+            --hypernetwork-dir ${FORGE_DIR}/models/hypernetworks \
+            --esrgan-models-path ${FORGE_DIR}/models/ESRGAN \
+            --controlnet-dir ${FORGE_DIR}/models/ControlNet"
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-ux.log"
     ) &
     UX_PID=$!
