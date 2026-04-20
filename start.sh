@@ -122,7 +122,7 @@ prepare_workspace() {
     for target in "${FORGE_DIR}" "${UX_FORGE_DIR}"; do
         if [[ ! -f "${target}/config.json" ]]; then
             print_feedback "writing default GPU config for ${target##*/}..."
-            printf '{"forge_inference_memory": 8192}\n' > "${target}/config.json"
+            printf '{"forge_inference_memory": 4096}\n' > "${target}/config.json"
         fi
     done
 }
@@ -170,6 +170,34 @@ start_classic_forge() {
     print_feedback "Classic Forge pid=${FORGE_PID}"
 }
 
+pre_clone_ux_repos() {
+    # launch.py clones several repos during first run. On RunPod there is no TTY
+    # so git prompts for credentials and fails. Pre-clone the ones that cause
+    # failures so launch.py finds them already present and skips the clone.
+    local repos_dir="${UX_FORGE_DIR}/repositories"
+    mkdir -p "${repos_dir}"
+
+    local -A REPOS=(
+        [stable-diffusion-stability-ai]="https://github.com/Stability-AI/stablediffusion.git"
+        [stable-diffusion-webui-assets]="https://github.com/AUTOMATIC1111/stable-diffusion-webui-assets.git"
+        [k-diffusion]="https://github.com/crowsonkb/k-diffusion.git"
+        [generative-models]="https://github.com/Stability-AI/generative-models.git"
+    )
+
+    for dir in "${!REPOS[@]}"; do
+        local target="${repos_dir}/${dir}"
+        if [[ ! -d "${target}/.git" ]]; then
+            rm -rf "${target}"
+            print_feedback "pre-cloning ${dir}..."
+            GIT_TERMINAL_PROMPT=0 git clone --depth=1 "${REPOS[$dir]}" "${target}" \
+                2>&1 | tee -a "${WORKSPACE_ROOT}/logs/webui-ux.log" || \
+                print_error "pre-clone failed for ${dir} — launch.py will retry"
+        else
+            print_feedback "repo ${dir} already present, skipping"
+        fi
+    done
+}
+
 start_ux_forge() {
     # UX Forge must wait for Classic to finish its pip install phase first.
     # They share the same venv — concurrent writes corrupt it.
@@ -178,6 +206,8 @@ start_ux_forge() {
         UX_PID=""
         return 0
     fi
+
+    pre_clone_ux_repos
 
     kill_port "${UX_PORT}"
     print_feedback "starting UX Forge on :${UX_PORT}"
@@ -190,9 +220,9 @@ start_ux_forge() {
         export GRADIO_SERVER_PORT="${UX_PORT}"
         export GRADIO_TEMP_DIR="${UX_FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-        # --skip-install: Classic Forge already ran pip setup on the shared venv.
+        # No --skip-install: UX Forge needs its own pip pass (different version tag).
         # Model dirs point to Classic Forge so models are not duplicated on disk.
-        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install --cuda-malloc \
+        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --cuda-malloc \
             --ckpt-dir ${FORGE_DIR}/models/Stable-diffusion \
             --lora-dir ${FORGE_DIR}/models/Lora \
             --vae-dir ${FORGE_DIR}/models/VAE \
