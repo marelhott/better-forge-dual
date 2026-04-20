@@ -88,17 +88,35 @@ prepare_workspace() {
         print_feedback "Classic Forge already present"
     fi
 
+    # If UX Forge dir exists but has no .git at root, it's stale content from an
+    # old AUTOMATIC1111 install (not Forge). Delete it so we re-sync below.
+    if [[ -d "${UX_FORGE_DIR}" ]] && [[ ! -d "${UX_FORGE_DIR}/.git" ]]; then
+        print_feedback "UX Forge dir missing .git — clearing stale content, will re-sync from Classic Forge..."
+        rm -rf "${UX_FORGE_DIR}"
+    fi
+
     if [[ ! -d "${UX_FORGE_DIR}" ]] || [[ -z "$(ls -A "${UX_FORGE_DIR}" 2>/dev/null)" ]]; then
-        print_feedback "creating UX Forge directory from Classic Forge..."
+        print_feedback "syncing UX Forge from Classic Forge (full copy including .git)..."
         mkdir -p "${UX_FORGE_DIR}"
-        rsync_with_progress "${FORGE_DIR}/" "${UX_FORGE_DIR}/"
+        # Full rsync without --ignore-existing so .git and repositories/ are copied.
+        rsync -aHx --info=progress2 "${FORGE_DIR}/" "${UX_FORGE_DIR}/"
     else
-        print_feedback "UX Forge directory already present"
+        print_feedback "UX Forge directory present with .git, skipping sync"
     fi
 
     for target in "${FORGE_DIR}" "${UX_FORGE_DIR}"; do
         if [[ -f "${target}/webui.sh" ]] && grep -q "can_run_as_root=0" "${target}/webui.sh"; then
             sed -i 's/can_run_as_root=0/can_run_as_root=1/' "${target}/webui.sh"
+        fi
+    done
+
+    # Write default Forge config only if config.json doesn't exist yet.
+    # forge_inference_memory: MB reserved for GPU compute (rest goes to weights).
+    # --cuda-malloc is in COMMANDLINE_ARGS; this prevents the "0% for compute" warning.
+    for target in "${FORGE_DIR}" "${UX_FORGE_DIR}"; do
+        if [[ ! -f "${target}/config.json" ]]; then
+            print_feedback "writing default GPU config for ${target##*/}..."
+            printf '{"forge_inference_memory": 8192}\n' > "${target}/config.json"
         fi
     done
 }
@@ -139,7 +157,7 @@ start_classic_forge() {
         export GRADIO_SERVER_PORT="${FORGE_PORT}"
         export GRADIO_TEMP_DIR="${FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-        export COMMANDLINE_ARGS="--listen --port ${FORGE_PORT} --api --theme dark --enable-insecure-extension-access"
+        export COMMANDLINE_ARGS="--listen --port ${FORGE_PORT} --api --theme dark --enable-insecure-extension-access --cuda-malloc"
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-classic.log"
     ) &
     FORGE_PID=$!
@@ -167,7 +185,7 @@ start_ux_forge() {
         export GRADIO_TEMP_DIR="${UX_FORGE_DIR}/tmp/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
         # --skip-install: Classic Forge already ran pip setup on the shared venv.
-        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install"
+        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install --cuda-malloc"
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-ux.log"
     ) &
     UX_PID=$!
