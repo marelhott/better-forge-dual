@@ -1,13 +1,16 @@
 FROM madiator2011/better-forge:light
 
-ENV CODE_PORT=7777
-ENV FORGE_PORT=7862
-ENV UX_PORT=7861
+# Pre-install the anapnoe UX extension into the baked Forge directory.
+# On first pod start, pre_start.sh rsyncs /stable-diffusion-webui-forge/
+# into /workspace/ – the extension is carried along automatically.
+RUN git clone --depth=1 \
+    https://github.com/anapnoe/sd-webui-ux.git \
+    /stable-diffusion-webui-forge/extensions/anapnoe-sd-webui-ux
 
-COPY start.sh /start.sh
-RUN chmod +x /start.sh
+# Replace pre_start.sh with our clean single-instance version.
+COPY pre_start.sh /pre_start.sh
+RUN chmod +x /pre_start.sh
 
-# Advertise the actual public ports this derived image expects in Runpod.
-EXPOSE 22 7777 7861 7862
-
-ENTRYPOINT ["/start.sh"]
+# Keep the original ENTRYPOINT (/opt/nvidia/nvidia_entrypoint.sh)
+# and CMD (/start.sh) from the base image – nginx, SSH, code-server
+# are all wired up there already, including the 7861→7860 nginx proxy.

@@ -1,133 +1,93 @@
 #!/bin/bash
-set -e
+# pre_start.sh – single-instance UX Forge startup
+# Called by the base image's /start.sh after nginx/SSH/code-server are up.
+# Forge listens internally on 7860; nginx in the base image proxies 7861→7860.
 
-print_feedback() {
-    GREEN='\033[0;32m'
-    NC='\033[0m'
-    echo -e "${GREEN}[Forge Startup]:${NC} $1"
-}
+set -euo pipefail
 
-rsync_with_progress() {
-    rsync -aHvx --info=progress2 --ignore-existing --update --stats "$@"
-}
+GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
+log()  { echo -e "${GREEN}[Forge]:${NC} $1"; }
+err()  { echo -e "${RED}[Forge]:${NC} $1" >&2; }
 
-wait_for_port() {
-    local port="$1"
-    local name="$2"
-    local timeout="${3:-300}"
-    local elapsed=0
-
-    print_feedback "Waiting for ${name} on port ${port}..."
-    while ! ss -lntp 2>/dev/null | grep -q ":${port} "; do
-        sleep 5
-        elapsed=$((elapsed + 5))
-        if [ "${elapsed}" -ge "${timeout}" ]; then
-            echo "[Forge Startup] Timeout waiting for ${name} on port ${port}" >&2
-            return 1
-        fi
-    done
-
-    print_feedback "${name} is listening on port ${port}."
-}
-
-start_forge_instance() {
-    local root="$1"
-    local name="$2"
-    local port="$3"
-    local log_file="$4"
-    shift 4
-
-    print_feedback "Starting ${name} on port ${port}..."
-    (
-        cd "$root"
-
-        chmod +x webui.sh 2>/dev/null || true
-
-        if grep -q "can_run_as_root=0" webui.sh; then
-            sed -i 's/can_run_as_root=0/can_run_as_root=1/' webui.sh
-        fi
-
-        mkdir -p "$(dirname "$log_file")" "${root}/tmp/gradio"
-
-        # Overwrite webui-user.sh so it cannot override COMMANDLINE_ARGS.
-        # The workspace volume persists between restarts and may carry a stale
-        # webui-user.sh with invalid flags (e.g. --output-path) from older runs.
-        cat > "${root}/webui-user.sh" << 'WEBUIEOF'
-#!/bin/bash
-# Managed by pre_start.sh – COMMANDLINE_ARGS is injected via environment.
-# Do not set COMMANDLINE_ARGS here; it will be ignored.
-WEBUIEOF
-
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ${name} in ${root}" >> "$log_file"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] COMMANDLINE_ARGS: --listen --port ${port} --enable-insecure-extension-access --api $*" >> "$log_file"
-
-        GRADIO_TEMP_DIR="${root}/tmp/gradio" \
-        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
-        COMMANDLINE_ARGS="--listen --port ${port} --enable-insecure-extension-access --api --opt-sdp-attention $*" \
-        bash webui.sh -f >> "$log_file" 2>&1
-        exit_code=$?
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} exited with code ${exit_code}" >> "$log_file"
-        exit "${exit_code}"
-    ) &
-}
-
-if [ "${NO_SYNC}" == "true" ]; then
-    print_feedback "Skipping sync and startup as per environment variable setting."
-    exec bash -c 'sleep infinity'
-fi
-
-MODE="${FORGE_MODE:-classic}"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
-CLASSIC_ROOT="${CLASSIC_ROOT:-${WORKSPACE_ROOT}/stable-diffusion-webui-forge}"
-UX_ROOT="${UX_ROOT:-${WORKSPACE_ROOT}/stable-diffusion-webui-ux-forge}"
+VENV_DIR="${WORKSPACE_ROOT}/bforge"
+FORGE_DIR="${WORKSPACE_ROOT}/stable-diffusion-webui-forge"
+LOG_FILE="${WORKSPACE_ROOT}/logs/webui.log"
 
-print_feedback "Starting Forge setup in mode: ${MODE}"
-
-if [ ! -d "${WORKSPACE_ROOT}/bforge" ]; then
-    print_feedback "Extracting virtual environment..."
-    mkdir -p "${WORKSPACE_ROOT}/bforge"
-    tar -xzf /bforge.tar.gz -C "${WORKSPACE_ROOT}/bforge"
-else
-    print_feedback "Virtual environment already exists, skipping extraction..."
+# ── skip mode ─────────────────────────────────────────────────────────────────
+if [[ "${NO_SYNC:-}" == "true" ]]; then
+    log "NO_SYNC=true – skipping startup"
+    exec sleep infinity
 fi
 
-source "${WORKSPACE_ROOT}/bforge/bin/activate"
-
-if [ ! -d "${CLASSIC_ROOT}" ] || [ -z "$(ls -A "${CLASSIC_ROOT}" 2>/dev/null)" ]; then
-    print_feedback "Classic Forge not found or empty. Syncing all files..."
-    mkdir -p "${CLASSIC_ROOT}"
-    rsync_with_progress /stable-diffusion-webui-forge/ "${CLASSIC_ROOT}/"
-    print_feedback "Initial classic sync completed."
+# ── venv ──────────────────────────────────────────────────────────────────────
+if [[ ! -d "${VENV_DIR}" ]] || [[ -z "$(ls -A "${VENV_DIR}" 2>/dev/null)" ]]; then
+    log "extracting virtual environment..."
+    mkdir -p "${VENV_DIR}"
+    tar -xzf /bforge.tar.gz -C "${VENV_DIR}"
 else
-    print_feedback "Classic Forge found. Skipping sync to preserve user modifications."
+    log "virtual environment present"
 fi
 
-if [ ! -d "${UX_ROOT}" ] || [ -z "$(ls -A "${UX_ROOT}" 2>/dev/null)" ]; then
-    print_feedback "UX Forge not found or empty. Creating from classic Forge as a safe fallback..."
-    mkdir -p "${UX_ROOT}"
-    rsync_with_progress "${CLASSIC_ROOT}/" "${UX_ROOT}/"
+# ── forge install ─────────────────────────────────────────────────────────────
+if [[ ! -d "${FORGE_DIR}" ]] || [[ -z "$(ls -A "${FORGE_DIR}" 2>/dev/null)" ]]; then
+    log "syncing Forge into workspace (first run)..."
+    mkdir -p "${FORGE_DIR}"
+    # -aHx: archive + hardlinks + stay on filesystem
+    # --ignore-existing: never overwrite user changes on subsequent syncs
+    rsync -aHx --info=progress2 --ignore-existing --update \
+        /stable-diffusion-webui-forge/ "${FORGE_DIR}/"
+    log "sync complete"
 else
-    print_feedback "UX Forge found. Skipping sync to preserve user modifications."
+    log "Forge already in workspace – skipping sync"
 fi
 
-mkdir -p "${WORKSPACE_ROOT}/logs"
+mkdir -p "${WORKSPACE_ROOT}/logs" "${FORGE_DIR}/tmp/gradio"
 
-COMMON_MODEL_ARGS="--ckpt-dir ${CLASSIC_ROOT}/models/Stable-diffusion --lora-dir ${CLASSIC_ROOT}/models/Lora --vae-dir ${CLASSIC_ROOT}/models/VAE --embeddings-dir ${CLASSIC_ROOT}/embeddings --hypernetwork-dir ${CLASSIC_ROOT}/models/hypernetworks --gfpgan-models-path ${CLASSIC_ROOT}/models/GFPGAN --codeformer-models-path ${CLASSIC_ROOT}/models/Codeformer --esrgan-models-path ${CLASSIC_ROOT}/models/ESRGAN --realesrgan-models-path ${CLASSIC_ROOT}/models/RealESRGAN --controlnet-dir ${CLASSIC_ROOT}/models/ControlNet"
+# ── patch webui.sh for root ───────────────────────────────────────────────────
+if grep -q 'can_run_as_root=0' "${FORGE_DIR}/webui.sh" 2>/dev/null; then
+    sed -i 's/can_run_as_root=0/can_run_as_root=1/' "${FORGE_DIR}/webui.sh"
+fi
 
-case "${MODE}" in
-    classic)
-        start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
-        ;;
-    ux)
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --data-dir "${UX_ROOT}"
-        ;;
-    both)
-        start_forge_instance "${CLASSIC_ROOT}" "classic Forge" 7860 "${WORKSPACE_ROOT}/logs/webui.log"
-        wait_for_port 7860 "classic Forge"
-        start_forge_instance "${UX_ROOT}" "UX Forge" 7863 "${WORKSPACE_ROOT}/logs/webui-ux.log" ${COMMON_MODEL_ARGS} --data-dir "${UX_ROOT}"
-        ;;
-    *)
-        echo "Unsupported FORGE_MODE=${MODE}; use classic, ux, or both" >&2
-        exit 1
-        ;;
-esac
+# ── neutralise webui-user.sh ──────────────────────────────────────────────────
+# The workspace volume persists between pod restarts. An old webui-user.sh
+# with stale COMMANDLINE_ARGS would override our env-var-based config.
+# Write a minimal stub – we inject everything via environment below.
+cat > "${FORGE_DIR}/webui-user.sh" << 'STUB'
+#!/bin/bash
+# Managed by pre_start.sh – do not set COMMANDLINE_ARGS here.
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+STUB
+
+# ── launch ────────────────────────────────────────────────────────────────────
+log "launching Forge on port 7860 (public: 7861 via nginx)..."
+log "log → ${LOG_FILE}"
+
+(
+    cd "${FORGE_DIR}"
+
+    # unset VIRTUAL_ENV so webui.sh activates our bforge venv properly
+    # and sets python_cmd to bforge/bin/python (not system python3).
+    unset VIRTUAL_ENV
+    export venv_dir="${VENV_DIR}"
+
+    export GRADIO_TEMP_DIR="${FORGE_DIR}/tmp/gradio"
+    export COMMANDLINE_ARGS="\
+--listen \
+--port 7860 \
+--api \
+--enable-insecure-extension-access \
+--opt-sdp-attention \
+--cuda-malloc \
+${EXTRA_FORGE_ARGS:-}"
+
+    log "COMMANDLINE_ARGS: ${COMMANDLINE_ARGS}"
+    bash webui.sh -f >> "${LOG_FILE}" 2>&1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Forge exited with code $?" >> "${LOG_FILE}"
+) &
+
+FORGE_PID=$!
+log "Forge PID=${FORGE_PID}"
+
+# pre_start.sh returns here; /start.sh in the base image continues with
+# its own sleep infinity – the Forge background process keeps running.
