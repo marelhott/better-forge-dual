@@ -21,8 +21,11 @@ if [[ "${NO_SYNC:-}" == "true" ]]; then
 fi
 
 # ── venv ──────────────────────────────────────────────────────────────────────
-if [[ ! -d "${VENV_DIR}" ]] || [[ -z "$(ls -A "${VENV_DIR}" 2>/dev/null)" ]]; then
-    log "extracting virtual environment..."
+# Check for bin/activate – a missing activate script means the venv was only
+# partially extracted (e.g. pod was terminated mid-tar).  Re-extract cleanly.
+if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
+    log "extracting virtual environment (bin/activate missing)..."
+    rm -rf "${VENV_DIR}"
     mkdir -p "${VENV_DIR}"
     tar -xzf /bforge.tar.gz -C "${VENV_DIR}"
 else
