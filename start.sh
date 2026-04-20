@@ -7,7 +7,6 @@ UX_PORT="${UX_PORT:-7861}"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 VENV_DIR="${VENV_DIR:-${WORKSPACE_ROOT}/bforge}"
 FORGE_DIR="${FORGE_DIR:-${WORKSPACE_ROOT}/stable-diffusion-webui-forge}"
-UX_FORGE_DIR="${UX_FORGE_DIR:-${WORKSPACE_ROOT}/stable-diffusion-webui-ux-forge}"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 print_feedback() { echo -e "${GREEN}[start]:${NC} $1"; }
@@ -88,43 +87,16 @@ prepare_workspace() {
         print_feedback "Classic Forge already present"
     fi
 
-    # If UX Forge dir exists but has no .git at root, it's stale content from an
-    # old AUTOMATIC1111 install (not Forge). Delete it so we re-sync below.
-    if [[ -d "${UX_FORGE_DIR}" ]] && [[ ! -d "${UX_FORGE_DIR}/.git" ]]; then
-        print_feedback "UX Forge dir missing .git — clearing stale content, will re-sync from Classic Forge..."
-        rm -rf "${UX_FORGE_DIR}"
+    if [[ -f "${FORGE_DIR}/webui.sh" ]] && grep -q "can_run_as_root=0" "${FORGE_DIR}/webui.sh"; then
+        sed -i 's/can_run_as_root=0/can_run_as_root=1/' "${FORGE_DIR}/webui.sh"
     fi
 
-    if [[ ! -d "${UX_FORGE_DIR}" ]] || [[ -z "$(ls -A "${UX_FORGE_DIR}" 2>/dev/null)" ]]; then
-        print_feedback "syncing UX Forge from Classic Forge (excluding models/outputs to save disk)..."
-        mkdir -p "${UX_FORGE_DIR}"
-        # Exclude large dirs — UX Forge will share models via COMMANDLINE_ARGS.
-        # outputs/ and log/ are UX-instance-specific and not needed from Classic.
-        rsync -aHx --info=progress2 \
-            --exclude='models/' \
-            --exclude='outputs/' \
-            --exclude='log/' \
-            --exclude='tmp/' \
-            "${FORGE_DIR}/" "${UX_FORGE_DIR}/"
-    else
-        print_feedback "UX Forge directory present with .git, skipping sync"
-    fi
-
-    for target in "${FORGE_DIR}" "${UX_FORGE_DIR}"; do
-        if [[ -f "${target}/webui.sh" ]] && grep -q "can_run_as_root=0" "${target}/webui.sh"; then
-            sed -i 's/can_run_as_root=0/can_run_as_root=1/' "${target}/webui.sh"
-        fi
-    done
-
-    # Write default Forge config only if config.json doesn't exist yet.
     # forge_inference_memory: MB reserved for GPU compute (rest goes to weights).
-    # --cuda-malloc is in COMMANDLINE_ARGS; this prevents the "0% for compute" warning.
-    for target in "${FORGE_DIR}" "${UX_FORGE_DIR}"; do
-        if [[ ! -f "${target}/config.json" ]]; then
-            print_feedback "writing default GPU config for ${target##*/}..."
-            printf '{"forge_inference_memory": 4096}\n' > "${target}/config.json"
-        fi
-    done
+    # 4096 MB leaves ~50 % of a 32 GB card for compute, avoiding the 0 % warning.
+    if [[ ! -f "${FORGE_DIR}/config.json" ]]; then
+        print_feedback "writing default GPU config..."
+        printf '{"forge_inference_memory": 4096}\n' > "${FORGE_DIR}/config.json"
+    fi
 }
 
 write_webui_user() {
@@ -170,66 +142,31 @@ start_classic_forge() {
     print_feedback "Classic Forge pid=${FORGE_PID}"
 }
 
-pre_clone_ux_repos() {
-    # launch.py clones several repos during first run. On RunPod there is no TTY
-    # so git prompts for credentials and fails. Pre-clone the ones that cause
-    # failures so launch.py finds them already present and skips the clone.
-    local repos_dir="${UX_FORGE_DIR}/repositories"
-    mkdir -p "${repos_dir}"
-
-    local -A REPOS=(
-        [stable-diffusion-stability-ai]="https://github.com/Stability-AI/stablediffusion.git"
-        [stable-diffusion-webui-assets]="https://github.com/AUTOMATIC1111/stable-diffusion-webui-assets.git"
-        [k-diffusion]="https://github.com/crowsonkb/k-diffusion.git"
-        [generative-models]="https://github.com/Stability-AI/generative-models.git"
-    )
-
-    for dir in "${!REPOS[@]}"; do
-        local target="${repos_dir}/${dir}"
-        if [[ ! -d "${target}/.git" ]]; then
-            rm -rf "${target}"
-            print_feedback "pre-cloning ${dir}..."
-            GIT_TERMINAL_PROMPT=0 git clone --depth=1 "${REPOS[$dir]}" "${target}" \
-                2>&1 | tee -a "${WORKSPACE_ROOT}/logs/webui-ux.log" || \
-                print_error "pre-clone failed for ${dir} — launch.py will retry"
-        else
-            print_feedback "repo ${dir} already present, skipping"
-        fi
-    done
-}
-
 start_ux_forge() {
-    # UX Forge must wait for Classic to finish its pip install phase first.
-    # They share the same venv — concurrent writes corrupt it.
+    # Wait for Classic Forge to finish pip install — they share the same venv
+    # and concurrent pip writes corrupt it.
     if ! wait_for_port "${FORGE_PORT}" "Classic Forge" 360; then
         print_error "Classic Forge never came up — skipping UX Forge"
         UX_PID=""
         return 0
     fi
 
-    pre_clone_ux_repos
-
     kill_port "${UX_PORT}"
     print_feedback "starting UX Forge on :${UX_PORT}"
-    write_webui_user "${UX_FORGE_DIR}"
+
+    # Both instances run from the same FORGE_DIR to avoid any git-clone / repo
+    # setup issues that arise from maintaining a separate UX install directory.
+    # A separate gradio temp dir is enough to keep the two processes isolated.
     (
-        cd "${UX_FORGE_DIR}"
-        mkdir -p tmp/gradio
+        cd "${FORGE_DIR}"
+        mkdir -p "${WORKSPACE_ROOT}/tmp-ux/gradio"
         unset VIRTUAL_ENV
         export venv_dir="${VENV_DIR}"
         export GRADIO_SERVER_PORT="${UX_PORT}"
-        export GRADIO_TEMP_DIR="${UX_FORGE_DIR}/tmp/gradio"
+        export GRADIO_TEMP_DIR="${WORKSPACE_ROOT}/tmp-ux/gradio"
         export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-        # No --skip-install: UX Forge needs its own pip pass (different version tag).
-        # Model dirs point to Classic Forge so models are not duplicated on disk.
-        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --cuda-malloc \
-            --ckpt-dir ${FORGE_DIR}/models/Stable-diffusion \
-            --lora-dir ${FORGE_DIR}/models/Lora \
-            --vae-dir ${FORGE_DIR}/models/VAE \
-            --embeddings-dir ${FORGE_DIR}/embeddings \
-            --hypernetwork-dir ${FORGE_DIR}/models/hypernetworks \
-            --esrgan-models-path ${FORGE_DIR}/models/ESRGAN \
-            --controlnet-dir ${FORGE_DIR}/models/ControlNet"
+        # --skip-install: Classic Forge already ran pip setup on the shared venv.
+        export COMMANDLINE_ARGS="--listen --port ${UX_PORT} --api --theme dark --enable-insecure-extension-access --skip-install --cuda-malloc"
         bash webui.sh -f 2>&1 | tee "${WORKSPACE_ROOT}/logs/webui-ux.log"
     ) &
     UX_PID=$!
