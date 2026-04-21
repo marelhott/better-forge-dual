@@ -47,6 +47,25 @@ fi
 
 mkdir -p "${WORKSPACE_ROOT}/logs" "${FORGE_DIR}/tmp/gradio"
 
+# ── CUDA compatibility check ──────────────────────────────────────────────────
+# If the baked PyTorch doesn't support this GPU's compute capability
+# (e.g. new Blackwell sm_120 cards), reinstall PyTorch automatically.
+CUDA_OK=false
+if "${VENV_DIR}/bin/python3" -c "import torch; torch.zeros(1).cuda(); print('ok')" 2>/dev/null | grep -q ok; then
+    CUDA_OK=true
+fi
+
+if [[ "$CUDA_OK" == "false" ]]; then
+    log "PyTorch CUDA incompatible with this GPU – reinstalling torch for current architecture..."
+    COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+    log "GPU compute capability: ${COMPUTE_CAP:-unknown}"
+    # Use cu128 wheel index which covers Ampere/Ada/Blackwell
+    "${VENV_DIR}/bin/pip" install --quiet --upgrade \
+        torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cu128 2>&1 | tail -3
+    log "PyTorch reinstalled"
+fi
+
 # ── patch webui.sh for root ───────────────────────────────────────────────────
 if grep -q 'can_run_as_root=0' "${FORGE_DIR}/webui.sh" 2>/dev/null; then
     sed -i 's/can_run_as_root=0/can_run_as_root=1/' "${FORGE_DIR}/webui.sh"
@@ -80,7 +99,6 @@ log "log → ${LOG_FILE}"
 --port 7860 \
 --api \
 --enable-insecure-extension-access \
---opt-sdp-attention \
 --cuda-malloc \
 ${EXTRA_FORGE_ARGS:-}"
 
